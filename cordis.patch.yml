@@ -1,0 +1,6 @@
+- insert:
+    - id: usage-panel
+      name: dsh-usage-panel
+      config:
+        historyDays: 182
+        maxSessions: 800

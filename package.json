@@ -1,0 +1,57 @@
+{
+  "name": "dsh-usage-panel",
+  "version": "1.0.0",
+  "description": "Local-first token usage dashboard for DeepSeek Harness: totals, composition, model share, daily trend, activity heatmap, and hourly per-provider speed / first-token performance.",
+  "type": "module",
+  "license": "MIT",
+  "author": "chunrichi",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chunrichi/dsh-usage-panel.git"
+  },
+  "homepage": "https://github.com/chunrichi/dsh-usage-panel#readme",
+  "bugs": {
+    "url": "https://github.com/chunrichi/dsh-usage-panel/issues"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "dashboard",
+    "token-usage",
+    "usage-analytics"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-locale"
+      ]
+    }
+  }
+}

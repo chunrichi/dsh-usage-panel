@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Token usage panel">
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="#102a43"/>
+  <rect x="15" y="38" width="9" height="14" rx="2.5" fill="#2563eb"/>
+  <rect x="28" y="30" width="9" height="22" rx="2.5" fill="#3b82f6"/>
+  <rect x="41" y="20" width="9" height="32" rx="2.5" fill="#93c5fd"/>
+  <polyline points="12,37 25,29 36,24 50,14" fill="none" stroke="#e0f2fe" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

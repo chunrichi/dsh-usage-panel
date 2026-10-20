@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Token Usage Panel",
+    "description": "A read-only Token usage board for DeepSeek Harness: lifetime and today/month totals, input vs. output vs. cache composition, a 182-day daily trend with activity heatmap, and per-model share — all aggregated locally from session logs, with no pricing or account access."
+  }
+}

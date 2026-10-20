@@ -1,0 +1,15 @@
+# macOS
+.DS_Store
+
+# dependencies
+node_modules/
+
+# logs and local env
+*.log
+.env
+.env.*
+
+# coverage / editor
+coverage/
+.idea/
+.vscode/
