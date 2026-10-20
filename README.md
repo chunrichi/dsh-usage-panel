@@ -4,7 +4,7 @@
 
 DeepSeek Harness 的本地优先 Token 用量看板插件：侧边栏入口 + 整页看板。所有数字都由本机会话日志实时聚合，不联网，不读取价格、账户或余额。
 
-![用量看板总览（深色主题）](docs/screenshots/dashboard.png)
+![用量看板（深色主题）](docs/screenshots/dashboard-2026-10-21.png)
 
 > **English** — A local-first token-usage dashboard for DeepSeek Harness. It adds a sidebar entry beside *Plugins* and renders a full-page panel with lifetime / today / month totals, output speed, cache hit rate, token composition, model share, daily trend, activity heatmap, and an hourly per-provider speed / first-token performance chart. Every number is derived from local session logs: no network calls, no pricing, no account data.
 
