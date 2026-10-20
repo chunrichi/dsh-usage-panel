@@ -40,7 +40,7 @@ plugin_manager action=install_bundle target=github:chunrichi/dsh-usage-panel
 ```
 
 - CLI 会把剩余参数转发到 `$DSH_HOME/profiles/<profile>`，在 profile 目录执行 `pnpm add github:...`；安装成功后自动把 `dsh-usage-panel` 加入该 profile 的 `dsh.profile.bundles`，下次启动生效。
-- `desktop` 是 Desktop 保留 profile：CLI 操作前需要**完全退出** Desktop；在应用内安装则立即热应用。
+- `desktop` 是 Desktop 保留 profile：需要完全退出 Desktop 后再执行，并且要用 **Desktop 自带的 CLI**（macOS 路径：`DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh`）；用普通 npm 安装的 `dsh` 操作 desktop profile 会被拒绝（`profile "desktop" is managed exclusively by the Electron application`）。在应用内安装则立即热应用、无需退出。
 - 切换版本：先 `dsh plugin --profile web remove dsh-usage-panel`，再重新 `add`。
 - 固定版本可以带 ref：`github:chunrichi/dsh-usage-panel#v1.0.0`。
 
