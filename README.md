@@ -23,21 +23,55 @@ DeepSeek Harness 的本地优先 Token 用量看板插件：侧边栏入口 + �
 
 ## 安装
 
-环境要求：DeepSeek Harness Desktop（Web UI profile），Node.js `>= 20`。
+环境要求：DeepSeek Harness Desktop（Web UI profile），Node.js `>= 20`。仓库自带构建产物、没有 `prepare` 脚本，因此从 GitHub 安装**不需要构建**。
 
-本仓库本身就是一个可直接安装的 bundle，无构建步骤：
+### 方式一：直接从 GitHub 安装（推荐）
+
+使用 DSH CLI（在任意目录执行；`web` 换成目标 profile 名）：
+
+```bash
+dsh plugin --profile web add github:chunrichi/dsh-usage-panel
+```
+
+或在 Harness 的插件管理页 / 交给 Agent 安装（`desktop` profile 推荐这条，可热应用）：
+
+```
+plugin_manager action=install_bundle target=github:chunrichi/dsh-usage-panel
+```
+
+- CLI 会把剩余参数转发到 `$DSH_HOME/profiles/<profile>`，在 profile 目录执行 `pnpm add github:...`；安装成功后自动把 `dsh-usage-panel` 加入该 profile 的 `dsh.profile.bundles`，下次启动生效。
+- `desktop` 是 Desktop 保留 profile：CLI 操作前需要**完全退出** Desktop；在应用内安装则立即热应用。
+- 切换版本：先 `dsh plugin --profile web remove dsh-usage-panel`，再重新 `add`。
+- 固定版本可以带 ref：`github:chunrichi/dsh-usage-panel#v1.0.0`。
+
+### 方式二：本地目录安装（改代码时使用）
 
 ```bash
 git clone https://github.com/chunrichi/dsh-usage-panel.git
 ```
 
-然后在 Harness 中执行（target 换成本地克隆的**绝对路径**）：
+然后在 Harness 中安装本地目录（target 用**绝对路径**）：
 
 ```
 plugin_manager action=install_bundle target=/absolute/path/to/dsh-usage-panel
 ```
 
+本地目录以 `link:` 依赖接入：修改源码后重新执行一次 `install_bundle` 即可让 Host 半边加载新模块，客户端改动刷新窗口生效。
+
 安装后侧边栏面板列表会多出一个看板图标（紧邻「插件」入口）。如果界面还没变化，刷新一次窗口即可加载新的客户端模块。
+
+### 安装机制（简述）
+
+`dsh plugin`、插件管理页和 Agent 的安装工具背后共用 `@deepseek-ai/dsh-plugin-manager` 的同一套操作：
+
+1. 解析 spec：registry 包名、本地路径、`github:` / `git+` 等 git 地址、tarball 四类；
+2. git 地址先做一次受超时限制的 GitHub 连接检查（只把网络错误判为失败，鉴权与传输交给 pnpm）；
+3. 在 profile 目录执行 pnpm 操作，把包写进 profile 的 `package.json` 与 `node_modules`；
+4. 安装后校验 `engines` / `peerDependencies` 兼容性，并读取新包的 `dsh.bundle.patch`；
+5. 把包名写进 profile 的 `dsh.profile.bundles`，使它成为该 profile 的一层 patch；
+6. 应用内安装会继续热应用 Host 行并刷新客户端 bundle；CLI 只改 profile 文件，因此下次启动生效。
+
+本仓库根目录的 `package.json` 同时声明了 `dsh.bundle.patch`（Host 插件行）与 `dsh.client`（Web 客户端模块），并已提交运行时代码，所以 `github:` 安装即可直接使用。
 
 ## 入口与交互
 
