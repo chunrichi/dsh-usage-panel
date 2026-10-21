@@ -1,6 +1,6 @@
 {
   "name": "dsh-usage-panel",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Local-first token usage dashboard for DeepSeek Harness: totals, composition, model share, daily trend, activity heatmap, and hourly per-provider speed / first-token performance.",
   "type": "module",
   "license": "MIT",

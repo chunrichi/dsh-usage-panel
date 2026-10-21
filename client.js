@@ -22,7 +22,7 @@ window.__ModuleLoader__.load({
   factory(require) {
     const React = require('react')
     const h = React.createElement
-    const { useCallback, useEffect, useMemo, useRef, useState } = React
+    const { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } = React
 
     /** Bundle identity and the two panel coordinates. */
     const PACKAGE_ID = 'dsh-usage-panel'
@@ -638,6 +638,12 @@ window.__ModuleLoader__.load({
 .up-perf-chip small{color:var(--dsw-alias-label-secondary);font-size:10.5px}
 .up-perf-chip-dot{width:8px;height:8px;border-radius:50%;flex:none}
 .up-perf-hint{margin-left:auto;font-size:11px;color:var(--dsw-alias-label-secondary);opacity:.85}
+.up-perf-panel{position:relative}
+.up-perf-body{position:relative;display:flex;flex-direction:column;gap:12px;min-height:248px}
+.up-perf-empty{flex:1;display:flex;align-items:center;justify-content:center;gap:8px;color:var(--dsw-alias-label-secondary);font-size:12px}
+.up-perf-loading{position:absolute;inset:0;z-index:2;display:flex;align-items:center;justify-content:center;gap:8px;border-radius:12px;background:color-mix(in srgb,var(--dsw-alias-bg-layer-1) 74%,transparent);color:var(--dsw-alias-label-secondary);font-size:12px;pointer-events:none;animation:up-fade .16s ease both}
+.up-perf-body.is-stale .up-perf-chart,.up-perf-body.is-stale .up-perf-legend{opacity:.32;pointer-events:none}
+.up-perf-reset.is-hidden{display:none}
 .up-sk-perf{height:268px}
 .up-trend{position:relative}
 .up-trend-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
@@ -689,7 +695,6 @@ window.__ModuleLoader__.load({
 .up-sk-grid2 .up-sk{height:208px}
 .up-sk-trend{height:252px}
 .up-sk-heat{height:148px}
-.up-loading-text{color:var(--dsw-alias-label-secondary);font-size:12px;display:flex;align-items:center;gap:8px}
 .up-loading-spin{width:12px;height:12px;border-radius:50%;border:1.5px solid var(--dsw-alias-border-l2);border-top-color:var(--up-accent);animation:up-spin .8s linear infinite}
 .up-empty,.up-error{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;min-height:220px;padding:28px;text-align:center}
 .up-empty-art{color:var(--up-accent);opacity:.9;animation:up-bob 3.6s ease-in-out infinite alternate}
@@ -719,8 +724,8 @@ window.__ModuleLoader__.load({
   .up-chart-line{stroke-dasharray:none!important;stroke-dashoffset:0!important}
 }
 @media (max-width:980px){.up-stats,.up-sk-stats,.up-sk-row{grid-template-columns:1fr 1fr}.up-hero{grid-column:1/-1}}
-@media (max-width:900px){.up-grid2,.up-sk-grid2{grid-template-columns:1fr}}
-@media (max-width:640px){.up-inner{padding:16px 14px 32px}.up-stats,.up-sk-stats,.up-sk-row{grid-template-columns:1fr}.up-head-actions{margin-left:0}.up-seg{--up-seg-w:48px}.up-hero .up-num{font-size:27px}}
+@media (max-width:900px){.up-grid2,.up-sk-grid2{grid-template-columns:1fr}.up-perf-body{min-height:276px}}
+@media (max-width:640px){.up-inner{padding:16px 14px 32px}.up-stats,.up-sk-stats,.up-sk-row{grid-template-columns:1fr}.up-head-actions{margin-left:0}.up-seg{--up-seg-w:48px}.up-hero .up-num{font-size:27px}.up-perf-reset.is-hidden{display:inline-flex}}
 `
 
     // ------------------------------------------------------------- primitives
@@ -775,6 +780,33 @@ window.__ModuleLoader__.load({
         return () => window.cancelAnimationFrame(frame)
       }, [])
       return ready
+    }
+
+    /**
+     * Measured content width for the SVG charts. The first measure runs in a
+     * layout effect so the viewBox already matches the real width on the first
+     * painted frame; a ResizeObserver keeps it fresh. Without this an 860px
+     * default viewBox briefly renders the chart taller and then snaps, which
+     * shifts the whole page while it is scrolled to the bottom.
+     */
+    function useMeasuredWidth() {
+      const ref = useRef(null)
+      const [width, setWidth] = useState(860)
+      const measure = useCallback(() => {
+        const element = ref.current
+        if (element === null) return
+        const next = Math.max(320, Math.round(element.getBoundingClientRect().width))
+        setWidth((current) => (Math.abs(current - next) > 2 ? next : current))
+      }, [])
+      useLayoutEffect(measure, [measure])
+      useEffect(() => {
+        const element = ref.current
+        if (element === null || typeof ResizeObserver === 'undefined') return undefined
+        const observer = new ResizeObserver(() => measure())
+        observer.observe(element)
+        return () => observer.disconnect()
+      }, [measure])
+      return [ref, width]
     }
 
     /** Re-render whenever the Client locale changes. */
@@ -892,26 +924,12 @@ window.__ModuleLoader__.load({
     /** Daily token trend with hover crosshair and keyboard stepping. */
     function TrendChart(props) {
       const { series, lang, T } = props
-      const wrapRef = useRef(null)
-      const [width, setWidth] = useState(860)
+      const [wrapRef, width] = useMeasuredWidth()
       const [hover, setHover] = useState(-1)
       const HEIGHT = 212
       const PAD = { top: 16, right: 12, bottom: 24, left: 46 }
       const innerWidth = Math.max(80, width - PAD.left - PAD.right)
       const innerHeight = HEIGHT - PAD.top - PAD.bottom
-
-      useEffect(() => {
-        const element = wrapRef.current
-        if (element === null || typeof ResizeObserver === 'undefined') return undefined
-        const observer = new ResizeObserver((entries) => {
-          const entry = entries[0]
-          if (!entry) return
-          const next = Math.max(320, Math.round(entry.contentRect.width))
-          setWidth((current) => (Math.abs(current - next) > 2 ? next : current))
-        })
-        observer.observe(element)
-        return () => observer.disconnect()
-      }, [])
 
       const points = useMemo(() => {
         const list = Array.isArray(series) ? series : []
@@ -993,7 +1011,7 @@ window.__ModuleLoader__.load({
         },
         h(
           'svg',
-          { viewBox: `0 0 ${width} ${HEIGHT}`, width: '100%', height: 'auto', 'aria-hidden': true },
+          { viewBox: `0 0 ${width} ${HEIGHT}`, width: '100%', 'aria-hidden': true },
           h(
             'defs',
             null,
@@ -1146,26 +1164,12 @@ window.__ModuleLoader__.load({
     /** Hourly multi-provider speed / first-token chart for one selected day. */
     function PerformanceChart(props) {
       const { performance, metric, lang, T } = props
-      const wrapRef = useRef(null)
-      const [width, setWidth] = useState(860)
+      const [wrapRef, width] = useMeasuredWidth()
       const [hover, setHover] = useState(-1)
       const HEIGHT = 210
       const PAD = { top: 16, right: 12, bottom: 26, left: 46 }
       const innerWidth = Math.max(80, width - PAD.left - PAD.right)
       const innerHeight = HEIGHT - PAD.top - PAD.bottom
-
-      useEffect(() => {
-        const element = wrapRef.current
-        if (element === null || typeof ResizeObserver === 'undefined') return undefined
-        const observer = new ResizeObserver((entries) => {
-          const entry = entries[0]
-          if (!entry) return
-          const next = Math.max(320, Math.round(entry.contentRect.width))
-          setWidth((current) => (Math.abs(current - next) > 2 ? next : current))
-        })
-        observer.observe(element)
-        return () => observer.disconnect()
-      }, [])
 
       const providers = useMemo(
         () => (performance && Array.isArray(performance.providers) ? performance.providers.slice(0, 4) : []),
@@ -1273,7 +1277,7 @@ window.__ModuleLoader__.load({
         onBlur: () => setHover(-1),
         onKeyDown: handleKey,
       },
-        h('svg', { viewBox: `0 0 ${width} ${HEIGHT}`, width: '100%', height: 'auto', 'aria-hidden': true },
+        h('svg', { viewBox: `0 0 ${width} ${HEIGHT}`, width: '100%', 'aria-hidden': true },
           axisRows.map((row, index) => h('g', { key: `perf-grid-${index}` },
             h('line', { className: 'up-chart-grid', x1: PAD.left, x2: width - PAD.right, y1: row.y, y2: row.y }),
             h('text', { className: 'up-chart-axis', x: PAD.left - 8, y: row.y, textAnchor: 'end', dominantBaseline: 'middle' }, row.label),
@@ -1356,7 +1360,12 @@ window.__ModuleLoader__.load({
       )
     }
 
-    /** Provider performance panel: metric tabs plus the selected day's chart. */
+    /**
+     * Provider performance panel: metric tabs plus the selected day's chart.
+     * The panel stays mounted when the day changes (no key, no entrance
+     * animation replay) and its body keeps a stable height, so switching days
+     * never reflows the page and never clamps the scroll position.
+     */
     function PerformancePanel(props) {
       const { performance, loading, day, today, onReset, lang, T, delay } = props
       const [metric, setMetric] = useState('tps')
@@ -1367,14 +1376,37 @@ window.__ModuleLoader__.load({
         { id: 'ttft', label: T['perf.tabTtft'] },
       ]
       const metricIndex = metric === 'ttft' ? 1 : 0
-      const hasData = perf !== null && perf.hours.length > 0 && perf.providers.length > 0
+      const fresh = perf !== null && (perf.date === day || perf.date === '')
+      const hasData = fresh && perf.hours.length > 0 && perf.providers.length > 0
+      const staleData = !fresh && perf !== null && perf.hours.length > 0 && perf.providers.length > 0
+      const showChart = hasData || staleData
+      const showOverlay = loading && showChart
       const legend = perf === null
         ? []
         : perf.providers
-          .filter((provider) => (metric === 'ttft' ? provider.ttftSamples > 0 : provider.speedSamples > 0))
+          .map((provider, index) => ({ provider, index }))
+          .filter(({ provider }) => (metric === 'ttft' ? provider.ttftSamples > 0 : provider.speedSamples > 0))
           .slice(0, 4)
 
-      return h('section', { className: 'up-card up-panel up-rise', style: { '--d': `${delay}ms` } },
+      const chartView = showChart
+        ? h(React.Fragment, null,
+          h(PerformanceChart, { key: `${perf.date}-${metric}`, performance: perf, metric, lang, T }),
+          h('div', { className: 'up-perf-legend' },
+            legend.map(({ provider, index }) => h('span', { className: 'up-perf-chip', key: provider.provider },
+              h('span', { className: 'up-perf-chip-dot', style: { background: PROVIDER_COLORS[index % PROVIDER_COLORS.length] } }),
+              providerLabel(provider.provider),
+              h('small', null, fill(T['perf.samples'], { count: fmtInt(provider.samples) })),
+            )),
+            h('span', { className: 'up-perf-hint' }, T['perf.hint']),
+          ),
+        )
+        : null
+
+      return h('section', {
+        className: 'up-card up-panel up-perf-panel up-rise',
+        style: { '--d': `${delay}ms` },
+        'aria-busy': loading ? true : undefined,
+      },
         h('div', { className: 'up-panel-head' },
           h('h2', { className: 'up-panel-title' }, T['perf.title']),
           h('span', { className: 'up-panel-hint' }, day === '' ? '—' : fullDate(day, lang)),
@@ -1389,23 +1421,26 @@ window.__ModuleLoader__.load({
               onClick: () => setMetric(option.id),
             }, option.label)),
           ),
-          isToday ? null : h('button', { type: 'button', className: 'up-refresh up-perf-reset', onClick: onReset }, T['perf.reset']),
+          // Keep the reset button in the layout even on today, so the head never
+          // grows a second row when a past day is selected on a narrow screen.
+          h('button', {
+            type: 'button',
+            className: `up-refresh up-perf-reset${isToday ? ' is-hidden' : ''}`,
+            onClick: onReset,
+            disabled: isToday,
+            tabIndex: isToday ? -1 : undefined,
+          }, T['perf.reset']),
         ),
-        loading && !hasData
-          ? h('div', { className: 'up-loading-text' }, h('span', { className: 'up-loading-spin' }), T['perf.loading'])
-          : hasData
-            ? h(React.Fragment, null,
-              h(PerformanceChart, { key: `${perf.date}-${metric}`, performance: perf, metric, lang, T }),
-              h('div', { className: 'up-perf-legend' },
-                legend.map((provider, index) => h('span', { className: 'up-perf-chip', key: provider.provider },
-                  h('span', { className: 'up-perf-chip-dot', style: { background: PROVIDER_COLORS[index % PROVIDER_COLORS.length] } }),
-                  providerLabel(provider.provider),
-                  h('small', null, fill(T['perf.samples'], { count: fmtInt(provider.samples) })),
-                )),
-                h('span', { className: 'up-perf-hint' }, T['perf.hint']),
-              ),
-            )
-            : h('div', { className: 'up-empty-inline' }, T['perf.empty']),
+        h('div', { className: `up-perf-body${showOverlay ? ' is-stale' : ''}` },
+          chartView !== null
+            ? chartView
+            : loading
+              ? h('div', { className: 'up-perf-empty' }, h('span', { className: 'up-loading-spin' }), T['perf.loading'])
+              : h('div', { className: 'up-perf-empty' }, T['perf.empty']),
+          showOverlay
+            ? h('div', { className: 'up-perf-loading', role: 'status' }, h('span', { className: 'up-loading-spin' }), T['perf.loading'])
+            : null,
+        ),
       )
     }
 
@@ -1607,11 +1642,32 @@ window.__ModuleLoader__.load({
       const todayKey = snapshot === null ? '' : snapshot.window.to
       const snapshotPerf = snapshot === null ? null : snapshot.performance
       const activeDay = selectedDay === '' ? todayKey : selectedDay
+      // Today always renders straight from the snapshot. For another day the last
+      // loaded payload stays visible as a dimmed backdrop until the new fold lands,
+      // so the panel never collapses to a short loading line (which would clamp the
+      // scroll position when the board is scrolled to the bottom).
+      const shownPerf = activeDay === todayKey ? snapshotPerf : performance
+
+      const selectDay = useCallback((dayKey) => {
+        const next = dayKey === todayKey ? '' : dayKey
+        setSelectedDay(next)
+        if (next === '') {
+          setPerfLoading(false)
+          return
+        }
+        // Keep a dimmed backdrop (today's payload) while the requested fold loads.
+        if (performance === null && snapshotPerf !== null) setPerformance(snapshotPerf)
+        const cached = performanceCache.get(next)
+        if (cached !== undefined) {
+          setPerformance(cached)
+          setPerfLoading(false)
+        } else {
+          setPerfLoading(true)
+        }
+      }, [todayKey, performance, snapshotPerf])
 
       useEffect(() => {
-        if (activeDay === '') return undefined
-        if (snapshotPerf !== null && snapshotPerf !== undefined && snapshotPerf.date === activeDay) {
-          setPerformance(snapshotPerf)
+        if (activeDay === '' || activeDay === todayKey) {
           setPerfLoading(false)
           return undefined
         }
@@ -1624,7 +1680,6 @@ window.__ModuleLoader__.load({
         let alive = true
         const controller = new AbortController()
         setPerfLoading(true)
-        setPerformance(null)
         loadPerformance(activeDay, controller.signal)
           .then((data) => {
             if (!alive) return
@@ -1640,7 +1695,7 @@ window.__ModuleLoader__.load({
           alive = false
           controller.abort()
         }
-      }, [activeDay, snapshotPerf])
+      }, [activeDay, todayKey])
 
       const daily = snapshot === null ? [] : snapshot.daily
       const series = useMemo(() => (range === 0 ? daily : daily.slice(-range)), [daily, range])
@@ -1807,16 +1862,15 @@ window.__ModuleLoader__.load({
                   lang,
                   T,
                   selectedDay: activeDay,
-                  onSelectDay: (day) => setSelectedDay(day === todayKey ? '' : day),
+                  onSelectDay: selectDay,
                 }),
               ),
               h(PerformancePanel, {
-                key: `perf-${activeDay}`,
-                performance,
+                performance: shownPerf,
                 loading: perfLoading,
                 day: activeDay,
                 today: todayKey,
-                onReset: () => setSelectedDay(''),
+                onReset: () => selectDay(todayKey),
                 lang,
                 T,
                 delay: 300,

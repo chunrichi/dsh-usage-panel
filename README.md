@@ -77,7 +77,7 @@ plugin_manager action=install_bundle target=/absolute/path/to/dsh-usage-panel
 
 - 侧边栏入口位于 `sidebar.panellist`，`order: 1`，紧挨「插件」入口；主面板注册在 `main` 槽的 `usage-panel` 键上。
 - 点开看板后中栏整页显示；再次点击其它面板即返回原会话。
-- 点击热力图格子切换「提供商性能」的日期；点击当天或「回到今天」恢复。
+- 点击热力图格子切换「提供商性能」的日期；点击当天或「回到今天」恢复。切换时性能面板原地更新：旧图表暗化并覆盖加载浮层，面板高度与滚动位置保持不变。
 - 「提供商性能」支持 `速度` / `首 Token` 标签切换，折线按 provider 分色，图例标注样本数。
 
 ## 数据口径
@@ -115,7 +115,7 @@ plugin_manager action=install_bundle target=/absolute/path/to/dsh-usage-panel
 ## 实现与性能
 
 - **Host 半边**（`index.js`）：通过 `sessionPersistence` 读取本机会话日志，逐会话按稳定 revision 增量缓存读数；整份快照按「会话签名 + 配置 + 本地日期」缓存。启动后约 4s 在后台静默预热一次；解码失败的会话进入 10 分钟退避门，不会让每次轮询都付出重试代价。
-- **Client 半边**（`client.js`）：零第三方依赖；快照在模块内缓存并对 7s 后的首次打开预热；仅在看板挂载且页面可见时每 60s 静默刷新。数字用单个 `requestAnimationFrame` 直接写文本节点，动画只使用 `transform` / `opacity`，图表悬浮仅在跨天时更新 state。
+- **Client 半边**（`client.js`）：零第三方依赖；快照在模块内缓存并对 7s 后的首次打开预热；仅在看板挂载且页面可见时每 60s 静默刷新。数字用单个 `requestAnimationFrame` 直接写文本节点，动画只使用 `transform` / `opacity`，图表悬浮仅在跨天时更新 state。图表宽度在首次绘制前同步测量，性能面板正文保持固定高度、按日期原地更新，因此切换热力图日期不会触发整页重排或滚动跳位。
 - **只读路由**：
   - `GET|HEAD /dsh-usage-panel/snapshot[?refresh=1][&debug=1]`
   - `GET|HEAD /dsh-usage-panel/performance?date=YYYY-MM-DD`
