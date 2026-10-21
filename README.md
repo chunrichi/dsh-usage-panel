@@ -1,6 +1,8 @@
 # dsh-usage-panel · Token 用量看板
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![DSH Plugin](https://img.shields.io/badge/DSH-plugin-2563eb)](https://github.com/topics/dsh-plugin)
+[![DeepSeek Harness](https://img.shields.io/badge/DeepSeek%20Harness-compatible-0b7285)](https://github.com/deepseek-ai/deepseek-harness)
 
 DeepSeek Harness 的本地优先 Token 用量看板插件：侧边栏入口 + 整页看板。所有数字都由本机会话日志实时聚合，不联网，不读取价格、账户或余额。
 
