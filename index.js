@@ -1,10 +1,12 @@
 /**
  * dsh-usage-panel — Host half.
  *
- * Aggregates Token usage from this machine's session logs and exposes exactly
- * one read-only JSON route for the Client panel:
+ * Aggregates Token usage from this machine's session logs and exposes two
+ * read-only JSON routes for the Client panel:
  *
  *   GET|HEAD /dsh-usage-panel/snapshot[?refresh=1]
+ *   GET|HEAD /dsh-usage-panel/performance[?date=YYYY-MM-DD]
+ *   GET|HEAD /dsh-usage-panel/performance?from=YYYY-MM-DD&to=YYYY-MM-DD
  *
  * A reading is one `assistant/message` event carrying `data.usage` (Anthropic
  * Messages semantics): `inputTokens` is the prompt that missed the cache, while
@@ -12,17 +14,25 @@
  * are not subsets of the input. No pricing, balance, or account access is
  * involved; every number is re-derivable from committed session logs.
  *
- * The derived caches live on `globalThis[Symbol.for('dsh-usage-panel:cache')]`
- * so a module reload (HMR remount) does not rescan every log: per-session
- * readings are keyed by revision + eventCount, and the whole snapshot is keyed
- * by the signature of every session id + revision plus the effective config.
+ * Snapshot schema v2 adds per-day model / reasoning / decode fields and
+ * all-history day statistics; the performance route serves one local day
+ * (hourly usage buckets + provider medians) or an inclusive day range
+ * (per-day provider medians).
+ *
+ * The derived caches live on
+ * `globalThis[Symbol.for('dsh-usage-panel:cache:v3')]` so a module reload (HMR
+ * remount) does not rescan every log: per-session readings are keyed by
+ * revision + eventCount, and the whole snapshot is keyed by the signature of
+ * every session id + revision plus the effective config. The cached body is
+ * additionally tagged with its schema version so a mid-session upgrade cannot
+ * serve a v1-shaped body from a previous module generation.
  */
 
 /** The two read-only routes this Host half owns. */
 const ROUTE_PATH = '/dsh-usage-panel/snapshot'
 const PERF_ROUTE_PATH = '/dsh-usage-panel/performance'
 /** Frozen snapshot schema version. */
-const SNAPSHOT_VERSION = 1
+const SNAPSHOT_VERSION = 2
 /** Parallel session-log reads; the log backend is cheap but not free. */
 const READ_CONCURRENCY = 6
 /**
@@ -460,6 +470,11 @@ function speedOf(bucket) {
 /**
  * Aggregate readings. `totals` / `byModel` cover all history, `today` / `month`
  * cover the current local day / month, and `byDay` only covers the daily window.
+ *
+ * The same single pass also accumulates the v2 additions: the per-day per-model
+ * token/call table (`daily[].models`) and the all-history day statistics
+ * (`history.activeDays` / `firstDay` / `lastDay` / `peak`), which deliberately
+ * include readings outside the daily window — history is cumulative.
  */
 function fold(records, days) {
   const todayKey = days[days.length - 1]
@@ -471,10 +486,31 @@ function fold(records, days) {
   const byDay = new Map()
   for (const day of days) byDay.set(day, emptyBucket())
   const byModel = new Map()
+  const dayModels = new Map()
+  const dayTokens = new Map()
 
   for (const record of records) {
     addReading(totals, record)
-    const key = dayKey(record.t)
+    // A reading without a usable timestamp (t = 0) has no local calendar day:
+    // it still counts toward totals/models, but not toward per-day statistics.
+    const key = record.t > 0 ? dayKey(record.t) : ''
+    if (key !== '') {
+      const dayTokensInRecord = record.i + record.o + record.cr + record.cw
+      const previousDayTokens = dayTokens.get(key)
+      dayTokens.set(key, previousDayTokens === undefined ? dayTokensInRecord : previousDayTokens + dayTokensInRecord)
+      let models = dayModels.get(key)
+      if (models === undefined) {
+        models = new Map()
+        dayModels.set(key, models)
+      }
+      let dayModel = models.get(record.m)
+      if (dayModel === undefined) {
+        dayModel = { tokens: 0, calls: 0 }
+        models.set(record.m, dayModel)
+      }
+      dayModel.tokens += dayTokensInRecord
+      dayModel.calls += 1
+    }
     if (key === todayKey) addReading(today, record)
     if (key.startsWith(monthKey)) addReading(month, record)
     const dayBucket = windowDays.has(key) ? byDay.get(key) : undefined
@@ -488,7 +524,32 @@ function fold(records, days) {
     addReading(model.bucket, record)
   }
 
-  return { totals, today, month, byDay, byModel, todayKey, monthKey }
+  let activeDays = 0
+  let firstDay = ''
+  let lastDay = ''
+  let peakDay = ''
+  let peakTokens = 0
+  for (const [key, tokens] of dayTokens) {
+    activeDays += 1
+    if (firstDay === '' || key < firstDay) firstDay = key
+    if (lastDay === '' || key > lastDay) lastDay = key
+    if (peakDay === '' || tokens > peakTokens || (tokens === peakTokens && key < peakDay)) {
+      peakDay = key
+      peakTokens = tokens
+    }
+  }
+
+  return {
+    totals,
+    today,
+    month,
+    byDay,
+    byModel,
+    dayModels,
+    todayKey,
+    monthKey,
+    history: { activeDays, firstDay, lastDay, peak: { day: peakDay, tokens: peakTokens } },
+  }
 }
 
 function bucketCounts(bucket) {
@@ -501,6 +562,35 @@ function bucketCounts(bucket) {
     calls: bucket.calls,
     tokensPerSecond: speedOf(bucket).tokensPerSecond,
   }
+}
+
+/** Hour usage bucket: the daily-row counters plus reasoning / decode metrics. */
+function hourUsageOf(bucket) {
+  const speed = speedOf(bucket)
+  return {
+    ...bucketCounts(bucket),
+    reasoning: bucket.reasoning,
+    decodeTokens: speed.decodeTokens,
+    decodeMs: speed.decodeMs,
+    samples: speed.samples,
+  }
+}
+
+/**
+ * Per-model token/call rows for one day (`daily[].models`). Only models that
+ * produced tokens that day are listed; ordered by tokens desc, model asc, the
+ * same ordering as the global `models[]`. Zero-usage days yield `[]`.
+ */
+function dailyModelsOf(dayModels, day) {
+  const models = dayModels instanceof Map ? dayModels.get(day) : undefined
+  const rows = []
+  if (models instanceof Map) {
+    for (const [model, entry] of models) {
+      if (entry.tokens > 0) rows.push({ model, tokens: entry.tokens, calls: entry.calls })
+    }
+  }
+  rows.sort((left, right) => right.tokens - left.tokens || left.model.localeCompare(right.model))
+  return rows
 }
 
 function shapeTotals(bucket) {
@@ -526,7 +616,17 @@ function shapeBody(settings, days, folded, sessions, truncated, readings, record
   const daily = []
   for (const day of days) {
     const bucket = folded.byDay.get(day)
-    daily.push({ d: day, ...bucketCounts(bucket === undefined ? emptyBucket() : bucket) })
+    const dayBucket = bucket === undefined ? emptyBucket() : bucket
+    const speed = speedOf(dayBucket)
+    daily.push({
+      d: day,
+      ...bucketCounts(dayBucket),
+      reasoning: dayBucket.reasoning,
+      samples: speed.samples,
+      decodeTokens: speed.decodeTokens,
+      decodeMs: speed.decodeMs,
+      models: dailyModelsOf(folded.dayModels, day),
+    })
   }
 
   const models = []
@@ -550,7 +650,15 @@ function shapeBody(settings, days, folded, sessions, truncated, readings, record
     speed: speedOf(folded.totals),
     today: { day: folded.todayKey, ...bucketCounts(folded.today) },
     month: { month: folded.monthKey, ...bucketCounts(folded.month) },
-    history: { tokens: totals.tokens, calls: totals.calls, reasoning: folded.totals.reasoning },
+    history: {
+      tokens: totals.tokens,
+      calls: totals.calls,
+      reasoning: folded.totals.reasoning,
+      activeDays: folded.history.activeDays,
+      firstDay: folded.history.firstDay,
+      lastDay: folded.history.lastDay,
+      peak: folded.history.peak,
+    },
     daily,
     models,
     performance: performanceOf(Array.isArray(records) ? records : [], todayKey),
@@ -693,7 +801,12 @@ async function startScan(scope, settings, force) {
 
   const now = Date.now()
   const cachedSnapshot = store.snapshot
-  if (cachedSnapshot !== null && cachedSnapshot !== undefined) {
+  // A body folded by an older module generation lacks the v2 fields; treat it
+  // as a miss so one incremental re-fold from the still-warm per-session cache
+  // upgrades the shape without re-reading any log.
+  const cacheShapeOk = cachedSnapshot !== null && cachedSnapshot !== undefined
+    && cachedSnapshot.bodyVersion === SNAPSHOT_VERSION
+  if (cacheShapeOk) {
     const retryAt = typeof cachedSnapshot.retryAt === 'number' ? cachedSnapshot.retryAt : 0
     if (cachedSnapshot.key === cacheKey && (retryAt === 0 || now < retryAt)) {
       // Same session signature: no log changed since this body was folded.
@@ -737,6 +850,7 @@ async function startScan(scope, settings, force) {
   store.snapshot = {
     key: cacheKey,
     scope: cacheScope,
+    bodyVersion: SNAPSHOT_VERSION,
     body,
     at: Date.now(),
     retryAt,
@@ -787,6 +901,9 @@ function emptyPerformanceBucket(provider) {
   return { provider, speeds: [], ttfts: [] }
 }
 
+/** Largest accepted inclusive day span of the `?from` / `?to` range mode. */
+const MAX_PERFORMANCE_RANGE_DAYS = 400
+
 /** Median of a numeric list (0 for an empty list). */
 function medianOf(values) {
   if (values.length === 0) return 0
@@ -812,10 +929,38 @@ function shapePerformanceBucket(bucket) {
   }
 }
 
+/** Provider rows are ordered by sample count desc, then provider name asc. */
+function sortPerformanceBuckets(rows) {
+  return rows.sort((left, right) => right.samples - left.samples || left.provider.localeCompare(right.provider))
+}
+
+/** Get-or-create one provider bucket inside a `Map<provider, bucket>`. */
+function performanceBucketFor(buckets, provider) {
+  let bucket = buckets.get(provider)
+  if (bucket === undefined) {
+    bucket = emptyPerformanceBucket(provider)
+    buckets.set(provider, bucket)
+  }
+  return bucket
+}
+
+/** Per-call throughput: output tokens over the decode window, 0 without one. */
+function callSpeedOf(record) {
+  return record.dec > 0 && record.dt > 0 ? record.dt / (record.dec / 1000) : 0
+}
+
+/** Record one reading's speed / first-token samples into one provider bucket. */
+function addPerformanceSample(bucket, record, callSpeed) {
+  if (callSpeed > 0) bucket.speeds.push(callSpeed)
+  if (record.ft > 0) bucket.ttfts.push(record.ft)
+}
+
 /**
- * Per-provider, per-hour speed and first-token latency for one local day.
- * A reading contributes to the speed series only with a decode window and to
- * the latency series only with a first-token time; both stay 0 otherwise.
+ * Per-provider, per-hour speed and first-token latency for one local day, plus
+ * the v2 hourly usage bucket (`hours[].tokens / … / samples`) that the Client's
+ * 24-hour chart reads. A reading contributes to the speed series only with a
+ * decode window and to the latency series only with a first-token time; both
+ * stay 0 otherwise. Hours without any reading are omitted.
  */
 function performanceOf(records, dateKey) {
   const range = localDayRange(dateKey)
@@ -826,44 +971,114 @@ function performanceOf(records, dateKey) {
       if (record === null || typeof record !== 'object') continue
       if (!(record.t >= range.start && record.t < range.end)) continue
       const provider = typeof record.p === 'string' && record.p !== '' ? record.p : 'unknown'
-      let totals = providers.get(provider)
-      if (totals === undefined) {
-        totals = emptyPerformanceBucket(provider)
-        providers.set(provider, totals)
-      }
       const hour = localHour(record.t)
       let row = hours.get(hour)
       if (row === undefined) {
-        row = { h: hour, providers: new Map() }
+        row = { h: hour, usage: emptyBucket(), providers: new Map() }
         hours.set(hour, row)
       }
-      let bucket = row.providers.get(provider)
-      if (bucket === undefined) {
-        bucket = emptyPerformanceBucket(provider)
-        row.providers.set(provider, bucket)
-      }
-      const callSpeed = record.dec > 0 && record.dt > 0 ? record.dt / (record.dec / 1000) : 0
-      for (const target of [totals, bucket]) {
-        if (callSpeed > 0) target.speeds.push(callSpeed)
-        if (record.ft > 0) target.ttfts.push(record.ft)
-      }
+      addReading(row.usage, record)
+      const callSpeed = callSpeedOf(record)
+      addPerformanceSample(performanceBucketFor(providers, provider), record, callSpeed)
+      addPerformanceSample(performanceBucketFor(row.providers, provider), record, callSpeed)
     }
   }
-  const providerList = [...providers.values()].map(shapePerformanceBucket)
-  providerList.sort((left, right) => right.samples - left.samples || left.provider.localeCompare(right.provider))
+  const providerList = sortPerformanceBuckets([...providers.values()].map(shapePerformanceBucket))
   const hourList = [...hours.values()]
     .sort((left, right) => left.h - right.h)
     .map((row) => ({
       h: row.h,
-      providers: [...row.providers.values()]
-        .map(shapePerformanceBucket)
-        .sort((left, right) => right.samples - left.samples || left.provider.localeCompare(right.provider)),
+      ...hourUsageOf(row.usage),
+      providers: sortPerformanceBuckets([...row.providers.values()].map(shapePerformanceBucket)),
     }))
   return {
     date: range === null ? String(dateKey === undefined || dateKey === null ? '' : dateKey) : dateKey,
     providers: providerList,
     hours: hourList,
   }
+}
+
+/**
+ * Per-provider medians over one inclusive local-day range, plus a per-day
+ * breakdown. One pass over the readings; `days` only lists local days with at
+ * least one reading (ascending), each day's provider rows use the same median
+ * wire shape as the single-day mode. Used by the `/performance?from=&to=` mode
+ * and folded from the in-memory records each request (no extra cache).
+ */
+function performanceRangeOf(records, fromKey, toKey) {
+  const fromRange = localDayRange(fromKey)
+  const toRange = localDayRange(toKey)
+  const providers = new Map()
+  const days = new Map()
+  if (fromRange !== null && toRange !== null && Array.isArray(records)) {
+    for (const record of records) {
+      if (record === null || typeof record !== 'object') continue
+      if (!(record.t >= fromRange.start && record.t < toRange.end)) continue
+      const provider = typeof record.p === 'string' && record.p !== '' ? record.p : 'unknown'
+      const day = dayKey(record.t)
+      let dayBuckets = days.get(day)
+      if (dayBuckets === undefined) {
+        dayBuckets = new Map()
+        days.set(day, dayBuckets)
+      }
+      const callSpeed = callSpeedOf(record)
+      addPerformanceSample(performanceBucketFor(providers, provider), record, callSpeed)
+      addPerformanceSample(performanceBucketFor(dayBuckets, provider), record, callSpeed)
+    }
+  }
+  const providerList = sortPerformanceBuckets([...providers.values()].map(shapePerformanceBucket))
+  const dayList = [...days.keys()]
+    .sort()
+    .map((day) => ({
+      d: day,
+      providers: sortPerformanceBuckets([...(days.get(day)?.values() ?? [])].map(shapePerformanceBucket)),
+    }))
+  return {
+    from: typeof fromKey === 'string' ? fromKey : '',
+    to: typeof toKey === 'string' ? toKey : '',
+    providers: providerList,
+    days: dayList,
+  }
+}
+
+/**
+ * Calendar-day ordinal for one validated `YYYY-MM-DD` key. Built from the UTC
+ * components so a DST shift inside the range cannot bend the span arithmetic.
+ */
+function dayOrdinal(dateKey) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(typeof dateKey === 'string' ? dateKey : '')
+  if (match === null) return null
+  const value = Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]))
+  return Number.isFinite(value) ? Math.floor(value / 86_400_000) : null
+}
+
+/**
+ * Resolve the `/performance` query into a day or range request. Range mode is
+ * entered when either `from` or `to` is present; both must then be valid
+ * `YYYY-MM-DD` keys with `from <= to` and a span of at most
+ * MAX_PERFORMANCE_RANGE_DAYS days. The single-day mode keeps the v1 behaviour
+ * (`?date=` optional, default today) and its `invalid-date` error code.
+ */
+function parsePerformanceQuery(search) {
+  const fromRaw = search.get('from')
+  const toRaw = search.get('to')
+  if (fromRaw !== null || toRaw !== null) {
+    const from = typeof fromRaw === 'string' ? fromRaw.trim() : ''
+    const to = typeof toRaw === 'string' ? toRaw.trim() : ''
+    if (from === '' || to === '') return { mode: 'invalid', error: 'invalid-range' }
+    if (localDayRange(from) === null || localDayRange(to) === null) return { mode: 'invalid', error: 'invalid-range' }
+    const fromOrdinal = dayOrdinal(from)
+    const toOrdinal = dayOrdinal(to)
+    if (fromOrdinal === null || toOrdinal === null) return { mode: 'invalid', error: 'invalid-range' }
+    if (toOrdinal < fromOrdinal || toOrdinal - fromOrdinal > MAX_PERFORMANCE_RANGE_DAYS) {
+      return { mode: 'invalid', error: 'invalid-range' }
+    }
+    return { mode: 'range', from, to }
+  }
+  const rawDate = search.get('date')
+  const requested = typeof rawDate === 'string' && rawDate.trim() !== '' ? rawDate.trim() : dayKey(Date.now())
+  if (localDayRange(requested) === null) return { mode: 'invalid', error: 'invalid-date' }
+  return { mode: 'day', date: requested }
 }
 
 /** Cached records of the sessions the latest scan considers alive. */
@@ -964,6 +1179,16 @@ function respond(res, status, payload, headOnly) {
   }
 }
 
+/** Uppercased HTTP method of one request (defaults to GET). */
+function requestMethod(req) {
+  return req !== null && req !== undefined && typeof req.method === 'string' ? req.method.toUpperCase() : 'GET'
+}
+
+/** Whether one request is a HEAD (its response must carry headers only). */
+function isHeadRequest(req) {
+  return requestMethod(req) === 'HEAD'
+}
+
 function createHandler(scope, settings) {
   return (req, res) => {
     let promise
@@ -971,20 +1196,20 @@ function createHandler(scope, settings) {
       promise = handleRequest(scope, settings, req, res)
     } catch (error) {
       warn(scope, 'request handling failed:', error)
-      respond(res, 500, { ok: false, error: 'snapshot-failed' })
+      respond(res, 500, { ok: false, error: 'snapshot-failed' }, isHeadRequest(req))
       return undefined
     }
     return promise.catch((error) => {
       warn(scope, 'request handling failed:', error)
-      respond(res, 500, { ok: false, error: 'snapshot-failed' })
+      respond(res, 500, { ok: false, error: 'snapshot-failed' }, isHeadRequest(req))
     })
   }
 }
 
 async function handleRequest(scope, settings, req, res) {
-  const method = req !== null && req !== undefined && typeof req.method === 'string' ? req.method.toUpperCase() : 'GET'
+  const method = requestMethod(req)
   if (method !== 'GET' && method !== 'HEAD') {
-    respond(res, 405, { ok: false, error: 'method-not-allowed' })
+    respond(res, 405, { ok: false, error: 'method-not-allowed' }, method === 'HEAD')
     return
   }
   const headOnly = method === 'HEAD'
@@ -1022,33 +1247,45 @@ function createPerformanceHandler(scope, settings) {
       promise = handlePerformanceRequest(scope, settings, req, res)
     } catch (error) {
       warn(scope, 'performance request handling failed:', error)
-      respond(res, 500, { ok: false, error: 'performance-failed' })
+      respond(res, 500, { ok: false, error: 'performance-failed' }, isHeadRequest(req))
       return undefined
     }
     return promise.catch((error) => {
       warn(scope, 'performance request handling failed:', error)
-      respond(res, 500, { ok: false, error: 'performance-failed' })
+      respond(res, 500, { ok: false, error: 'performance-failed' }, isHeadRequest(req))
     })
   }
 }
 
+/**
+ * Serve `/performance` in both modes:
+ *
+ * - `?date=YYYY-MM-DD` (default today): one local day, `performance.hours[]`
+ *   carries the v2 hourly usage buckets next to the per-provider medians.
+ * - `?from=YYYY-MM-DD&to=YYYY-MM-DD`: inclusive range, `performance.days[]`
+ *   plus range-wide provider medians. Invalid / reversed / over-long ranges
+ *   are rejected with 400 `invalid-range` before any scan.
+ *
+ * Both modes fold from the records the shared scan already cached in memory;
+ * they never trigger a full rescan on their own (`force = false`).
+ */
 async function handlePerformanceRequest(scope, settings, req, res) {
-  const method = req !== null && req !== undefined && typeof req.method === 'string' ? req.method.toUpperCase() : 'GET'
+  const method = requestMethod(req)
   if (method !== 'GET' && method !== 'HEAD') {
-    respond(res, 405, { ok: false, error: 'method-not-allowed' })
+    respond(res, 405, { ok: false, error: 'method-not-allowed' }, method === 'HEAD')
     return
   }
   const headOnly = method === 'HEAD'
-  let dateParam = ''
+  let query
   try {
     const rawUrl = req !== null && req !== undefined && typeof req.url === 'string' && req.url !== '' ? req.url : PERF_ROUTE_PATH
-    dateParam = new URL(rawUrl, 'http://127.0.0.1').searchParams.get('date') ?? ''
+    query = parsePerformanceQuery(new URL(rawUrl, 'http://127.0.0.1').searchParams)
   } catch {
-    dateParam = ''
+    // An unparsable URL degrades to the v1 default: today's single-day view.
+    query = { mode: 'day', date: dayKey(Date.now()) }
   }
-  const requested = dateParam.trim() === '' ? dayKey(Date.now()) : dateParam.trim()
-  if (localDayRange(requested) === null) {
-    respond(res, 400, { ok: false, error: 'invalid-date' })
+  if (query.mode === 'invalid') {
+    respond(res, 400, { ok: false, error: query.error }, headOnly)
     return
   }
   const startedAt = nowMs()
@@ -1057,14 +1294,26 @@ async function handlePerformanceRequest(scope, settings, req, res) {
     // fold reads, and reuses the same revision gate the snapshot route uses.
     await scanShared(scope, settings, false)
     const store = cacheStore()
-    const payload = {
-      ok: true,
-      version: SNAPSHOT_VERSION,
-      generatedAt: Date.now(),
-      date: requested,
-      tookMs: elapsedMs(startedAt),
-      performance: performanceOf(liveSessionRecords(store), requested),
-    }
+    const records = liveSessionRecords(store)
+    const tookMs = elapsedMs(startedAt)
+    const payload = query.mode === 'range'
+      ? {
+        ok: true,
+        version: SNAPSHOT_VERSION,
+        generatedAt: Date.now(),
+        tookMs,
+        from: query.from,
+        to: query.to,
+        performance: performanceRangeOf(records, query.from, query.to),
+      }
+      : {
+        ok: true,
+        version: SNAPSHOT_VERSION,
+        generatedAt: Date.now(),
+        date: query.date,
+        tookMs,
+        performance: performanceOf(records, query.date),
+      }
     respond(res, 200, payload, headOnly)
   } catch (error) {
     warn(scope, 'performance fold failed:', error)

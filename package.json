@@ -1,7 +1,7 @@
 {
   "name": "dsh-usage-panel",
-  "version": "1.0.1",
-  "description": "Local-first token usage dashboard for DeepSeek Harness: totals, composition, model share, daily trend, activity heatmap, and hourly per-provider speed / first-token performance.",
+  "version": "1.1.0",
+  "description": "Local-first token usage dashboard for DeepSeek Harness: global time scope (today / 7 / 30 / 90 days / all) with an any-day calendar, single-day 24-hour detail, totals and composition, model share, activity heatmap, and a dual-axis trend & performance combo chart combining token bars with per-provider speed / first-token medians (hourly within a day, daily across a range).",
   "type": "module",
   "license": "MIT",
   "author": "chunrichi",
